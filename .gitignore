@@ -1,0 +1,21 @@
+# Python / PyCache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PyInstaller build folders
+build/
+dist/
+dmg_staging/
+*.spec
+
+# macOS / Windows system files
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Linter / Test caches
+.ruff_cache/
+.pytest_cache/
+.coverage
