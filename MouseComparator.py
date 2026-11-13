@@ -26,7 +26,7 @@ logger = logging.getLogger("MouseComparator")
 
 APP_NAME = "MouseComparator PRO"
 APP_ID = "com.zalma.mousecomparator.pro"
-APP_VERSION = "0.0.1"
+APP_VERSION = "0.0.2"
 
 
 # ==============================================================================
@@ -164,10 +164,19 @@ TRANSLATIONS = {
         "btn_load_dir_b": "📂 Mappa / CSV 'B' betöltése",
         "btn_export_img": "🖼 Összefoglaló Kép",
         "btn_export_csv": "📊 Delta CSV",
+        "btn_export_origin": "📈 OriginPro Export",
         "btn_export_html": "📄 HTML / PDF Riport",
         "mode_1v1": "🔍 1-vs-1 Összehasonlítás (A vs B)",
         "mode_long": "📈 Longitudinális / Futások (Idősor)",
         "mode_cohort": "👥 Kohorsz / Csoport (A vs B)",
+        "lbl_agg_mode": "Futás összegzés:",
+        "agg_median": "Medián (Ajánlott)",
+        "agg_best": "Legjobb futás (Best-of-3)",
+        "agg_first2": "Első 2 futás mediánja",
+        "agg_mean": "Átlag (Mean)",
+        "chk_paired": "Párosított (ugyanazok az egyedek)",
+        "msg_origin_exported": "✅ OriginPro elemzési csomag exportálva ({n} fájl) ide:\n{path}",
+        "msg_no_paired_match": "Nincs közös Egyed_ID a két mérés között! Párosítatlan módra váltás ajánlott.",
         "lbl_select_a": "Mérés A (Bázis / Kontroll):",
         "lbl_select_b": "Mérés B (Összehasonlított):",
         "lbl_artifact": "Képi réteg:",
@@ -211,10 +220,19 @@ TRANSLATIONS = {
         "btn_load_dir_b": "📂 Load Folder / CSV 'B'",
         "btn_export_img": "🖼 Summary Image",
         "btn_export_csv": "📊 Delta CSV",
+        "btn_export_origin": "📈 OriginPro Export",
         "btn_export_html": "📄 HTML / PDF Report",
         "mode_1v1": "🔍 1-vs-1 Comparison (A vs B)",
         "mode_long": "📈 Longitudinal / Multi-Run",
         "mode_cohort": "👥 Cohort / Group (A vs B)",
+        "lbl_agg_mode": "Run Aggregation:",
+        "agg_median": "Median (Recommended)",
+        "agg_best": "Best Run (Best-of-3)",
+        "agg_first2": "First 2 Runs Median",
+        "agg_mean": "Mean",
+        "chk_paired": "Paired (same animals)",
+        "msg_origin_exported": "✅ OriginPro analysis package exported ({n} files) to:\n{path}",
+        "msg_no_paired_match": "No common Subject IDs found between A and B! Consider switching to Unpaired mode.",
         "lbl_select_a": "Record A (Baseline / Control):",
         "lbl_select_b": "Record B (Target / Treated):",
         "lbl_artifact": "Visual Layer:",
@@ -711,6 +729,198 @@ class StatisticalComparator:
             return 0.0
         return float((np.mean(b) - np.mean(a)) / s_pool)
 
+    @staticmethod
+    def cohens_dz(vals_a: List[float], vals_b: List[float]) -> float:
+        """Computes paired Cohen's d_z = mean(B - A) / SD(B - A)."""
+        a = np.asarray(vals_a, dtype=np.float64)
+        b = np.asarray(vals_b, dtype=np.float64)
+        if a.size < 2 or a.size != b.size:
+            return 0.0
+        diff = b - a
+        sd = float(np.std(diff, ddof=1))
+        if sd <= 1e-9:
+            return 0.0
+        return float(np.mean(diff) / sd)
+
+    @staticmethod
+    def shapiro_wilk(vals: List[float]) -> Tuple[float, float]:
+        """Returns (W, p_value) from Shapiro-Wilk normality test (or (1.0, 1.0) if n < 3 or constant)."""
+        arr = np.asarray(vals, dtype=np.float64)
+        if arr.size < 3 or float(np.ptp(arr)) <= 1e-12:
+            return 1.0, 1.0
+        try:
+            from scipy import stats as sp_stats
+            res = sp_stats.shapiro(arr)
+            p_val = float(res.pvalue)
+            w_stat = float(res.statistic)
+            if math.isfinite(p_val) and math.isfinite(w_stat):
+                return w_stat, p_val
+        except (ImportError, ValueError):
+            pass
+        return 1.0, 1.0
+
+    @classmethod
+    def paired_t_test(cls, vals_a: List[float], vals_b: List[float]) -> Tuple[float, float]:
+        """Returns (t_stat, p_value) for a two-sided paired t-test."""
+        a = np.asarray(vals_a, dtype=np.float64)
+        b = np.asarray(vals_b, dtype=np.float64)
+        if a.size < 2 or a.size != b.size:
+            return 0.0, 1.0
+        diff = b - a
+        sd = float(np.std(diff, ddof=1))
+        if sd <= 1e-12:
+            return 0.0, 1.0 if abs(float(np.mean(diff))) <= 1e-9 else 0.0
+        t_stat = float(np.mean(diff) / (sd / math.sqrt(diff.size)))
+        try:
+            from scipy import stats as sp_stats
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                res = sp_stats.ttest_rel(b, a)
+            p_val = float(res.pvalue)
+            if math.isfinite(p_val):
+                return float(res.statistic), p_val
+        except (ImportError, ValueError):
+            pass
+        df = max(1, diff.size - 1)
+        z_approx = abs(t_stat) * (1.0 - 1.0 / (4.0 * df)) / math.sqrt(1.0 + (t_stat ** 2) / (2.0 * df))
+        return t_stat, cls._normal_survival_two_tailed(z_approx)
+
+    @classmethod
+    def wilcoxon_signed_rank(cls, vals_a: List[float], vals_b: List[float]) -> Tuple[float, float]:
+        """Returns (stat, p_value) for two-sided Wilcoxon signed-rank test on paired samples."""
+        a = np.asarray(vals_a, dtype=np.float64)
+        b = np.asarray(vals_b, dtype=np.float64)
+        if a.size < 2 or a.size != b.size:
+            return 0.0, 1.0
+        diff = b - a
+        nz = diff[np.abs(diff) > 1e-12]
+        if nz.size == 0:
+            return 0.0, 1.0
+        try:
+            from scipy import stats as sp_stats
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                res = sp_stats.wilcoxon(b, a, zero_method="wilcox", alternative="two-sided")
+            p_val = float(res.pvalue)
+            if math.isfinite(p_val):
+                return float(res.statistic), p_val
+        except (ImportError, ValueError):
+            pass
+        # Normal-approximation fallback for signed ranks
+        abs_nz = np.abs(nz)
+        order = np.argsort(abs_nz, kind="mergesort")
+        ranks = np.empty(nz.size, dtype=np.float64)
+        i = 0
+        while i < nz.size:
+            j = i
+            while j + 1 < nz.size and abs(abs_nz[order[j + 1]] - abs_nz[order[i]]) <= 1e-12:
+                j += 1
+            avg_r = 0.5 * (i + j) + 1.0
+            for k in range(i, j + 1):
+                ranks[order[k]] = avg_r
+            i = j + 1
+        w_pos = float(np.sum(ranks[nz > 0]))
+        w_neg = float(np.sum(ranks[nz < 0]))
+        w_stat = min(w_pos, w_neg)
+        n = nz.size
+        mu = n * (n + 1) / 4.0
+        sigma = math.sqrt(n * (n + 1) * (2 * n + 1) / 24.0)
+        if sigma <= 1e-12:
+            return w_stat, 1.0
+        z = (abs(w_stat - mu) - 0.5) / sigma
+        return w_stat, cls._normal_survival_two_tailed(max(0.0, z))
+
+    @staticmethod
+    def aggregate_subject_runs(records: List[RunRecord], agg_mode: str = "median") -> Dict[str, Dict[str, float]]:
+        """
+        Aggregates multi-run RunRecords into 1 representative value-dict per subject_id.
+        agg_mode:
+          - 'median': Median across all runs of the subject (robust to Run-3 motivation outliers).
+          - 'best': Best single run per metric according to lower_is_better (maximal motor capacity).
+          - 'first2': Median of runs with run_num <= 2 (excludes Run-3+ fatigue/motivation drop).
+          - 'mean': Arithmetic mean across all runs.
+        """
+        by_subj: Dict[str, List[RunRecord]] = {}
+        for r in records:
+            if not r.is_subject_aggregate:
+                by_subj.setdefault(r.subject_id, []).append(r)
+
+        out: Dict[str, Dict[str, float]] = {}
+        for subj_id, r_list in by_subj.items():
+            runs = sorted(r_list, key=lambda x: (x.run_num, x.video_name))
+            agg: Dict[str, float] = {"_run_count": float(len(runs))}
+            for key, _hu, _en, _unit, lower_is_better in METRIC_SPECS:
+                vals = [float(x.metrics.get(key, 0.0)) for x in runs]
+                if not vals:
+                    agg[key] = 0.0
+                    continue
+                if agg_mode == "mean":
+                    agg[key] = float(np.mean(vals))
+                elif agg_mode == "best":
+                    if lower_is_better is True:
+                        agg[key] = float(np.min(vals))
+                    elif lower_is_better is False:
+                        agg[key] = float(np.max(vals))
+                    else:
+                        agg[key] = float(np.median(vals))
+                elif agg_mode == "first2":
+                    early = [float(x.metrics.get(key, 0.0)) for x in runs if 1 <= x.run_num <= 2]
+                    target = early if early else vals
+                    agg[key] = float(np.median(target))
+                else:  # "median" (default)
+                    agg[key] = float(np.median(vals))
+            out[subj_id] = agg
+        return out
+
+    @staticmethod
+    def analyze_trial_effect(records: List[RunRecord], metric_keys: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        Evaluates systematic Run 1 vs Run 2 vs Run 3 effect (fatigue / motivation loss)
+        across subjects that have runs 1, 2, and 3 using Friedman's non-parametric test.
+        """
+        if metric_keys is None:
+            metric_keys = [
+                "Teljes_Athaladasi_Ido_mp",
+                "Netto_Mozgasi_Ido_mp",
+                "Megallasok_OsszIdeje_mp",
+                "Orr_Lenezes_Db",
+                "Mancs_Labhiba_Db",
+                "Atlagsebesseg_cm_mp",
+            ]
+        by_subj: Dict[str, Dict[int, RunRecord]] = {}
+        for r in records:
+            if not r.is_subject_aggregate and r.run_num in (1, 2, 3):
+                by_subj.setdefault(r.subject_id, {})[r.run_num] = r
+        complete_subjs = [s for s, rm in sorted(by_subj.items()) if 1 in rm and 2 in rm and 3 in rm]
+        results: List[Dict[str, Any]] = []
+        for key in metric_keys:
+            r1 = [float(by_subj[s][1].metrics.get(key, 0.0)) for s in complete_subjs]
+            r2 = [float(by_subj[s][2].metrics.get(key, 0.0)) for s in complete_subjs]
+            r3 = [float(by_subj[s][3].metrics.get(key, 0.0)) for s in complete_subjs]
+            p_friedman = 1.0
+            chi2 = 0.0
+            if len(complete_subjs) >= 3:
+                try:
+                    from scipy import stats as sp_stats
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", RuntimeWarning)
+                        res = sp_stats.friedmanchisquare(r1, r2, r3)
+                    if math.isfinite(float(res.pvalue)):
+                        chi2 = float(res.statistic)
+                        p_friedman = float(res.pvalue)
+                except (ImportError, ValueError):
+                    pass
+            results.append({
+                "key": key,
+                "n_subjects": len(complete_subjs),
+                "run1_median": float(np.median(r1)) if r1 else 0.0,
+                "run2_median": float(np.median(r2)) if r2 else 0.0,
+                "run3_median": float(np.median(r3)) if r3 else 0.0,
+                "chi2": chi2,
+                "p_friedman": p_friedman,
+            })
+        return results
+
     @classmethod
     def compare_1v1(cls, rec_a: RunRecord, rec_b: RunRecord, lang: str = "hu") -> List[Dict[str, Any]]:
         """Generates a structured comparison table between two RunRecords."""
@@ -749,26 +959,84 @@ class StatisticalComparator:
         return rows
 
     @classmethod
-    def compare_cohorts(cls, group_a: List[RunRecord], group_b: List[RunRecord], lang: str = "hu") -> List[Dict[str, Any]]:
-        """Computes group Mean ± SD, Δ%, Welch t-test p-value, Mann-Whitney p-value, and Cohen's d."""
+    def compare_cohorts(
+        cls,
+        group_a: List[RunRecord],
+        group_b: List[RunRecord],
+        lang: str = "hu",
+        paired: bool = False,
+        agg_mode: str = "median",
+        aggregate_by_subject: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Computes group statistics and hypothesis tests between Group A and Group B.
+        - If paired=True: aggregates each subject's runs via `agg_mode`, matches subjects by `subject_id`,
+          and runs Shapiro-Wilk normality check on (B - A), Paired t-test, Wilcoxon Signed-Rank, and Cohen's d_z.
+        - If paired=False and aggregate_by_subject=True: aggregates per subject first (no pseudoreplication),
+          then runs Welch's t-test, Mann-Whitney U, and Cohen's d.
+        - If both are False: legacy run-level comparison for backward compatibility.
+        """
         rows: List[Dict[str, Any]] = []
         tr_d = TRANSLATIONS.get(lang, TRANSLATIONS["hu"])
         runs_a = [r for r in group_a if not r.is_subject_aggregate] or group_a
         runs_b = [r for r in group_b if not r.is_subject_aggregate] or group_b
 
+        agg_a: Dict[str, Dict[str, float]] = {}
+        agg_b: Dict[str, Dict[str, float]] = {}
+        common_ids: List[str] = []
+        if paired or aggregate_by_subject:
+            agg_a = cls.aggregate_subject_runs(runs_a, agg_mode=agg_mode)
+            agg_b = cls.aggregate_subject_runs(runs_b, agg_mode=agg_mode)
+            if paired:
+                common_ids = sorted(set(agg_a.keys()) & set(agg_b.keys()))
+
         for key, lbl_hu, lbl_en, unit, lower_is_better in METRIC_SPECS:
-            vals_a = [float(r.metrics.get(key, 0.0)) for r in runs_a]
-            vals_b = [float(r.metrics.get(key, 0.0)) for r in runs_b]
+            if paired:
+                vals_a = [agg_a[sid].get(key, 0.0) for sid in common_ids]
+                vals_b = [agg_b[sid].get(key, 0.0) for sid in common_ids]
+            elif aggregate_by_subject:
+                vals_a = [m.get(key, 0.0) for m in agg_a.values()]
+                vals_b = [m.get(key, 0.0) for m in agg_b.values()]
+            else:
+                vals_a = [float(r.metrics.get(key, 0.0)) for r in runs_a]
+                vals_b = [float(r.metrics.get(key, 0.0)) for r in runs_b]
+
             mean_a = float(np.mean(vals_a)) if vals_a else 0.0
             sd_a = float(np.std(vals_a, ddof=1)) if len(vals_a) > 1 else 0.0
+            med_a = float(np.median(vals_a)) if vals_a else 0.0
+            q25_a = float(np.percentile(vals_a, 25)) if vals_a else 0.0
+            q75_a = float(np.percentile(vals_a, 75)) if vals_a else 0.0
+
             mean_b = float(np.mean(vals_b)) if vals_b else 0.0
             sd_b = float(np.std(vals_b, ddof=1)) if len(vals_b) > 1 else 0.0
+            med_b = float(np.median(vals_b)) if vals_b else 0.0
+            q25_b = float(np.percentile(vals_b, 25)) if vals_b else 0.0
+            q75_b = float(np.percentile(vals_b, 75)) if vals_b else 0.0
 
-            delta = mean_b - mean_a
-            pct = (delta / abs(mean_a)) * 100.0 if abs(mean_a) > 1e-6 else 0.0
-            _t, p_t = cls.welch_t_test(vals_a, vals_b)
-            _u, p_mw = cls.mann_whitney_u(vals_a, vals_b)
-            d_eff = cls.cohens_d(vals_a, vals_b)
+            if paired and vals_a:
+                diffs = [b - a for a, b in zip(vals_a, vals_b, strict=True)]
+                _w, shapiro_p = cls.shapiro_wilk(diffs)
+                _t, p_t = cls.paired_t_test(vals_a, vals_b)
+                _w_stat, p_nonparam = cls.wilcoxon_signed_rank(vals_a, vals_b)
+                d_eff = cls.cohens_dz(vals_a, vals_b)
+                is_normal = (len(diffs) >= 3) and (shapiro_p >= 0.05)
+                rec_test = "Paired t-test" if is_normal else "Wilcoxon"
+                p_rec = p_t if is_normal else p_nonparam
+                delta = med_b - med_a if agg_mode in ("median", "first2") else mean_b - mean_a
+                base_ref = med_a if agg_mode in ("median", "first2") else mean_a
+                pct = (delta / abs(base_ref)) * 100.0 if abs(base_ref) > 1e-6 else 0.0
+            else:
+                _w_a, sp_a = cls.shapiro_wilk(vals_a)
+                _w_b, sp_b = cls.shapiro_wilk(vals_b)
+                shapiro_p = min(sp_a, sp_b)
+                _t, p_t = cls.welch_t_test(vals_a, vals_b)
+                _u, p_nonparam = cls.mann_whitney_u(vals_a, vals_b)
+                d_eff = cls.cohens_d(vals_a, vals_b)
+                is_normal = (len(vals_a) >= 3 and len(vals_b) >= 3) and (shapiro_p >= 0.05)
+                rec_test = "Welch t-test" if is_normal else "Mann-Whitney U"
+                p_rec = p_t if is_normal else p_nonparam
+                delta = mean_b - mean_a
+                pct = (delta / abs(mean_a)) * 100.0 if abs(mean_a) > 1e-6 else 0.0
 
             if abs(delta) <= 1e-5 or lower_is_better is None:
                 status = "neutral"
@@ -776,21 +1044,37 @@ class StatisticalComparator:
             else:
                 is_better = (delta < 0) if lower_is_better else (delta > 0)
                 status = "improved" if is_better else "worse"
-                sig_star = " *" if min(p_t, p_mw) < 0.05 else ""
+                p_sig = p_rec if (paired or aggregate_by_subject) else min(p_t, p_nonparam)
+                sig_star = " ***" if p_sig < 0.001 else (" **" if p_sig < 0.01 else (" *" if p_sig < 0.05 else ""))
                 eval_txt = (tr_d["eval_improved"] if is_better else tr_d["eval_worse"]) + sig_star
 
             rows.append({
                 "key": key,
                 "label": lbl_hu if lang == "hu" else lbl_en,
                 "unit": unit,
-                "val_a": mean_a,
+                "n_a": len(vals_a),
+                "n_b": len(vals_b),
+                "paired": paired,
+                "agg_mode": agg_mode,
+                "val_a": med_a if (paired and agg_mode in ("median", "first2")) else mean_a,
+                "mean_a": mean_a,
                 "sd_a": sd_a,
-                "val_b": mean_b,
+                "median_a": med_a,
+                "q25_a": q25_a,
+                "q75_a": q75_a,
+                "val_b": med_b if (paired and agg_mode in ("median", "first2")) else mean_b,
+                "mean_b": mean_b,
                 "sd_b": sd_b,
+                "median_b": med_b,
+                "q25_b": q25_b,
+                "q75_b": q75_b,
                 "delta": delta,
                 "pct": pct,
+                "shapiro_p": shapiro_p,
                 "p_t": p_t,
-                "p_mw": p_mw,
+                "p_mw": p_nonparam,
+                "p_rec": p_rec,
+                "rec_test": rec_test,
                 "cohens_d": d_eff,
                 "status": status,
                 "eval_text": eval_txt,
@@ -1438,6 +1722,189 @@ class ReportExporter:
             return False
 
     @classmethod
+    def export_origin_package(
+        cls,
+        out_dir: str,
+        records_a: List[RunRecord],
+        records_b: List[RunRecord],
+        agg_mode: str = "median",
+        paired: bool = True,
+        lang: str = "hu",
+    ) -> List[str]:
+        """
+        Exports an OriginPro-ready analysis package (comma-delimited, dot-decimal CSVs):
+          1. Origin_Wide_Paired_<agg_mode>.csv  (1 row per Egyed_ID: A, B, Delta, PctChange + Run1..3)
+          2. Origin_Long_AllRuns.csv            (Long format for Grouped Box / Violin / 2-way RM ANOVA)
+          3. Origin_Summary_Stats.csv           (Group Mean/SD, Median/IQR, Shapiro, Paired-t/Wilcoxon, d/dz)
+          4. Origin_TrialEffect_MotivationCheck.csv (Run 1 vs 2 vs 3 Friedman test for fatigue/motivation)
+        Returns list of written file paths.
+        """
+        os.makedirs(out_dir, exist_ok=True)
+        written: List[str] = []
+
+        runs_a = [r for r in records_a if not r.is_subject_aggregate] or records_a
+        runs_b = [r for r in records_b if not r.is_subject_aggregate] or records_b
+        agg_a = StatisticalComparator.aggregate_subject_runs(runs_a, agg_mode=agg_mode)
+        agg_b = StatisticalComparator.aggregate_subject_runs(runs_b, agg_mode=agg_mode)
+
+        # Build run lookup (subject_id, run_num) -> RunRecord
+        by_sr_a: Dict[Tuple[str, int], RunRecord] = {(r.subject_id, r.run_num): r for r in runs_a}
+        by_sr_b: Dict[Tuple[str, int], RunRecord] = {(r.subject_id, r.run_num): r for r in runs_b}
+
+        core_run_metrics = [
+            "Teljes_Athaladasi_Ido_mp",
+            "Netto_Mozgasi_Ido_mp",
+            "Mancs_Labhiba_Db",
+            "Mely_Leleses_Db",
+            "Megallasok_OsszIdeje_mp",
+            "Orr_Lenezes_Db",
+            "Atlagsebesseg_cm_mp",
+            "Testtartas_Imbolygas_px",
+        ]
+
+        if paired:
+            subj_ids = sorted(set(agg_a.keys()) & set(agg_b.keys()))
+            if not subj_ids:
+                subj_ids = sorted(set(agg_a.keys()) | set(agg_b.keys()))
+        else:
+            subj_ids = sorted(set(agg_a.keys()) | set(agg_b.keys()))
+
+        # 1. Wide-format CSV
+        wide_path = os.path.join(out_dir, f"Origin_Wide_Paired_{agg_mode}.csv")
+        try:
+            with open(wide_path, mode="w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f, delimiter=",")
+                header = ["Egyed_ID", "Runs_A", "Runs_B"]
+                for key, *_ in METRIC_SPECS:
+                    header.extend([f"A_{key}", f"B_{key}", f"Delta_{key}", f"PctChange_{key}"])
+                for key in core_run_metrics:
+                    for rn in (1, 2, 3):
+                        header.extend([f"A_Run{rn}_{key}", f"B_Run{rn}_{key}"])
+                w.writerow(header)
+
+                for sid in subj_ids:
+                    ma = agg_a.get(sid)
+                    mb = agg_b.get(sid)
+                    row = [
+                        sanitize_csv_cell(sid),
+                        str(int(ma["_run_count"])) if ma else "",
+                        str(int(mb["_run_count"])) if mb else "",
+                    ]
+                    for key, *_ in METRIC_SPECS:
+                        va = ma.get(key, float("nan")) if ma else float("nan")
+                        vb = mb.get(key, float("nan")) if mb else float("nan")
+                        if ma and mb:
+                            d = vb - va
+                            pct = (d / abs(va)) * 100.0 if abs(va) > 1e-6 else 0.0
+                            row.extend([f"{va:.4f}", f"{vb:.4f}", f"{d:+.4f}", f"{pct:+.2f}"])
+                        else:
+                            row.extend([
+                                f"{va:.4f}" if ma else "",
+                                f"{vb:.4f}" if mb else "",
+                                "",
+                                "",
+                            ])
+                    for key in core_run_metrics:
+                        for rn in (1, 2, 3):
+                            ra = by_sr_a.get((sid, rn))
+                            rb = by_sr_b.get((sid, rn))
+                            row.append(f"{ra.metrics.get(key, 0.0):.4f}" if ra else "")
+                            row.append(f"{rb.metrics.get(key, 0.0):.4f}" if rb else "")
+                    w.writerow(row)
+            written.append(wide_path)
+        except OSError as e:
+            logger.error("Failed to write %s: %s", wide_path, e)
+
+        # 2. Long-format CSV
+        long_path = os.path.join(out_dir, "Origin_Long_AllRuns.csv")
+        try:
+            with open(long_path, mode="w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f, delimiter=",")
+                header = ["Egyed_ID", "Condition", "Run"] + [m[0] for m in METRIC_SPECS]
+                w.writerow(header)
+                for cond_label, rlist in [("A_Baseline", runs_a), ("B_Target", runs_b)]:
+                    for r in sorted(rlist, key=lambda x: (x.subject_id, x.run_num)):
+                        row = [sanitize_csv_cell(r.subject_id), cond_label, str(r.run_num)]
+                        for key, *_ in METRIC_SPECS:
+                            row.append(f"{float(r.metrics.get(key, 0.0)):.4f}")
+                        w.writerow(row)
+            written.append(long_path)
+        except OSError as e:
+            logger.error("Failed to write %s: %s", long_path, e)
+
+        # 3. Summary Stats CSV
+        stats_rows = StatisticalComparator.compare_cohorts(
+            runs_a, runs_b, lang=lang, paired=paired, agg_mode=agg_mode, aggregate_by_subject=True
+        )
+        sum_path = os.path.join(out_dir, "Origin_Summary_Stats.csv")
+        try:
+            with open(sum_path, mode="w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f, delimiter=",")
+                w.writerow([
+                    "Metric_Key", "Label", "Unit", "Design", "Agg_Mode", "N_A", "N_B",
+                    "Mean_A", "SD_A", "Median_A", "Q25_A", "Q75_A",
+                    "Mean_B", "SD_B", "Median_B", "Q25_B", "Q75_B",
+                    "Delta", "Pct_Change", "Shapiro_p", "Parametric_p", "NonParametric_p",
+                    "Effect_Size_d_or_dz", "Recommended_Test", "Recommended_p", "Assessment"
+                ])
+                for r in stats_rows:
+                    w.writerow([
+                        sanitize_csv_cell(r["key"]),
+                        sanitize_csv_cell(r["label"]),
+                        sanitize_csv_cell(r.get("unit", "")),
+                        "Paired" if paired else "Unpaired",
+                        agg_mode,
+                        str(r.get("n_a", 0)),
+                        str(r.get("n_b", 0)),
+                        f"{r.get('mean_a', r['val_a']):.4f}",
+                        f"{r.get('sd_a', 0.0):.4f}",
+                        f"{r.get('median_a', r['val_a']):.4f}",
+                        f"{r.get('q25_a', 0.0):.4f}",
+                        f"{r.get('q75_a', 0.0):.4f}",
+                        f"{r.get('mean_b', r['val_b']):.4f}",
+                        f"{r.get('sd_b', 0.0):.4f}",
+                        f"{r.get('median_b', r['val_b']):.4f}",
+                        f"{r.get('q25_b', 0.0):.4f}",
+                        f"{r.get('q75_b', 0.0):.4f}",
+                        f"{r['delta']:+.4f}",
+                        f"{r['pct']:+.2f}",
+                        f"{r.get('shapiro_p', 1.0):.5f}",
+                        f"{r.get('p_t', 1.0):.5f}",
+                        f"{r.get('p_mw', 1.0):.5f}",
+                        f"{r.get('cohens_d', 0.0):+.3f}",
+                        sanitize_csv_cell(r.get("rec_test", "")),
+                        f"{r.get('p_rec', 1.0):.5f}",
+                        sanitize_csv_cell(r["eval_text"]),
+                    ])
+            written.append(sum_path)
+        except OSError as e:
+            logger.error("Failed to write %s: %s", sum_path, e)
+
+        # 4. Trial-Effect (Motivation Drop) Check CSV
+        trial_path = os.path.join(out_dir, "Origin_TrialEffect_MotivationCheck.csv")
+        try:
+            with open(trial_path, mode="w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f, delimiter=",")
+                w.writerow(["Group", "Metric_Key", "Complete_Subjects_N", "Run1_Median", "Run2_Median", "Run3_Median", "Friedman_Chi2", "Friedman_p"])
+                for grp_lbl, rlist in [("A_Baseline", runs_a), ("B_Target", runs_b)]:
+                    for tr_row in StatisticalComparator.analyze_trial_effect(rlist):
+                        w.writerow([
+                            grp_lbl,
+                            tr_row["key"],
+                            str(tr_row["n_subjects"]),
+                            f"{tr_row['run1_median']:.4f}",
+                            f"{tr_row['run2_median']:.4f}",
+                            f"{tr_row['run3_median']:.4f}",
+                            f"{tr_row['chi2']:.4f}",
+                            f"{tr_row['p_friedman']:.5f}",
+                        ])
+            written.append(trial_path)
+        except OSError as e:
+            logger.error("Failed to write %s: %s", trial_path, e)
+
+        return written
+
+    @classmethod
     def export_html_report(
         cls,
         path: str,
@@ -1598,6 +2065,8 @@ class MouseComparatorApp:
         self.slider_pct = tk.DoubleVar(value=50.0)
         self.long_subject_var = tk.StringVar(value="")
         self.long_metric_var = tk.StringVar(value="Mancs_Labhiba_Db")
+        self.cohort_paired_var = tk.BooleanVar(value=True)
+        self.cohort_agg_var = tk.StringVar(value="median")
 
         self._cached_visual_bgr: Optional[np.ndarray] = None
         self._photo_ref: Optional[tk.PhotoImage] = None
@@ -1687,6 +2156,9 @@ class MouseComparatorApp:
         self.btn_exp_csv = ttk.Button(h_right, text=self.tr("btn_export_csv"), command=self.action_export_csv, style="Ghost.TButton")
         self.btn_exp_csv.pack(side="left", padx=4)
 
+        self.btn_exp_origin = ttk.Button(h_right, text=self.tr("btn_export_origin"), command=self.action_export_origin, style="Ghost.TButton")
+        self.btn_exp_origin.pack(side="left", padx=4)
+
         self.btn_exp_html = ttk.Button(h_right, text=self.tr("btn_export_html"), command=self.action_export_html, style="Emerald.TButton")
         self.btn_exp_html.pack(side="left", padx=4)
 
@@ -1741,6 +2213,31 @@ class MouseComparatorApp:
             )
             b.pack(side="left", padx=(0, 6))
             self.mode_buttons[m_val] = (b, m_key)
+
+        # Cohort paired & aggregation controls
+        cohort_ctrl = tk.Frame(mode_row, bg=P["bg_card"])
+        cohort_ctrl.pack(side="left", padx=(14, 6))
+        self.chk_paired = tk.Checkbutton(
+            cohort_ctrl,
+            text=self.tr("chk_paired"),
+            variable=self.cohort_paired_var,
+            command=self.refresh_comparison,
+            bg=P["bg_card"], fg=P["text_main"], selectcolor=P["bg_panel"],
+            activebackground=P["bg_card"], activeforeground=P["text_main"],
+            font=(self.ui_font, 9),
+        )
+        self.chk_paired.pack(side="left", padx=(0, 8))
+
+        self.lbl_agg_mode = tk.Label(cohort_ctrl, text=self.tr("lbl_agg_mode"), bg=P["bg_card"], fg=P["text_muted"], font=(self.ui_font, 9))
+        self.lbl_agg_mode.pack(side="left", padx=(0, 4))
+        self._agg_keys = ["median", "best", "first2", "mean"]
+        self.combo_agg = ttk.Combobox(
+            cohort_ctrl, state="readonly", width=22,
+            values=[self.tr(f"agg_{k}") for k in self._agg_keys]
+        )
+        self.combo_agg.current(0)
+        self.combo_agg.pack(side="left")
+        self.combo_agg.bind("<<ComboboxSelected>>", lambda _e: self._on_agg_selected())
 
         # Slider for Wipe / Onion-Skin blend
         slider_frame = tk.Frame(mode_row, bg=P["bg_card"])
@@ -1847,7 +2344,13 @@ class MouseComparatorApp:
         self.btn_load_b.config(text=self.tr("btn_load_dir_b"))
         self.btn_exp_img.config(text=self.tr("btn_export_img"))
         self.btn_exp_csv.config(text=self.tr("btn_export_csv"))
+        self.btn_exp_origin.config(text=self.tr("btn_export_origin"))
         self.btn_exp_html.config(text=self.tr("btn_export_html"))
+        self.chk_paired.config(text=self.tr("chk_paired"))
+        self.lbl_agg_mode.config(text=self.tr("lbl_agg_mode"))
+        agg_idx = max(0, self.combo_agg.current())
+        self.combo_agg.config(values=[self.tr(f"agg_{k}") for k in self._agg_keys])
+        self.combo_agg.current(agg_idx)
         self.lbl_slider.config(text=self.tr("lbl_slider"))
         self.lbl_sel_a.config(text=self.tr("lbl_select_a"))
         self.lbl_sel_b.config(text=self.tr("lbl_select_b"))
@@ -2003,15 +2506,28 @@ class MouseComparatorApp:
             )
 
         else:  # Cohort / Group mode
-            self._current_rows = StatisticalComparator.compare_cohorts(self.records_a, self.records_b, lang=self.lang)
+            agg_mode = self.cohort_agg_var.get()
+            paired = bool(self.cohort_paired_var.get())
+            self._current_rows = StatisticalComparator.compare_cohorts(
+                self.records_a,
+                self.records_b,
+                lang=self.lang,
+                paired=paired,
+                agg_mode=agg_mode,
+                aggregate_by_subject=True,
+            )
+            if paired and self._current_rows and self._current_rows[0].get("n_a", 0) == 0:
+                self.status_var.set(self.tr("msg_no_paired_match"))
             self._populate_tree(self._current_rows, is_cohort=True)
-            mean_a = {r["key"]: r["val_a"] for r in self._current_rows}
-            mean_b = {r["key"]: r["val_b"] for r in self._current_rows}
+            agg_a = {r["key"]: r["val_a"] for r in self._current_rows}
+            agg_b = {r["key"]: r["val_b"] for r in self._current_rows}
+            n_matched = self._current_rows[0].get("n_a", 0) if self._current_rows else 0
+            lbl_tag = f"{'Paired' if paired else 'Group'} ({agg_mode}, n={n_matched})"
             if vmode == "diff" and img_a is not None and img_b is not None:
                 self._cached_visual_bgr = VisualComparisonEngine.render_difference_heatmap(img_a, img_b, "Cohort A", "Cohort B")
             else:
                 self._cached_visual_bgr = VisualComparisonEngine.render_radar_and_zones_chart(
-                    mean_a, mean_b, "Cohort A (Mean)", "Cohort B (Mean)"
+                    agg_a, agg_b, f"A — {lbl_tag}", f"B — {lbl_tag}"
                 )
 
         # Update headline KPI delta (Paw Faults & Transit Time)
@@ -2024,13 +2540,26 @@ class MouseComparatorApp:
 
         self._redraw_canvas_image()
 
+    def _on_agg_selected(self):
+        idx = self.combo_agg.current()
+        if 0 <= idx < len(self._agg_keys):
+            self.cohort_agg_var.set(self._agg_keys[idx])
+            self.refresh_comparison()
+
     def _populate_tree(self, rows: List[Dict[str, Any]], is_cohort: bool = False):
         self.tree.delete(*self.tree.get_children())
         for r in rows:
             if is_cohort:
-                va_str = f"{r['val_a']:.2f}±{r.get('sd_a', 0.0):.2f}"
-                vb_str = f"{r['val_b']:.2f}±{r.get('sd_b', 0.0):.2f}"
-                ext_str = f"p={r.get('p_t', 1.0):.3f} | d={r.get('cohens_d', 0.0):+.2f}"
+                if r.get("paired") and r.get("agg_mode") in ("median", "first2"):
+                    va_str = f"{r['median_a']:.2f} [{r.get('q25_a', 0.0):.1f}-{r.get('q75_a', 0.0):.1f}]"
+                    vb_str = f"{r['median_b']:.2f} [{r.get('q25_b', 0.0):.1f}-{r.get('q75_b', 0.0):.1f}]"
+                else:
+                    va_str = f"{r['val_a']:.2f}±{r.get('sd_a', 0.0):.2f}"
+                    vb_str = f"{r['val_b']:.2f}±{r.get('sd_b', 0.0):.2f}"
+                p_show = r.get("p_rec", r.get("p_t", 1.0))
+                t_tag = "W" if "Wilcoxon" in r.get("rec_test", "") else ("MW" if "Mann" in r.get("rec_test", "") else "t")
+                d_tag = "dz" if r.get("paired") else "d"
+                ext_str = f"p={p_show:.3f}({t_tag}) | {d_tag}={r.get('cohens_d', 0.0):+.2f}"
             else:
                 va_str = f"{r['val_a']:.2f}"
                 vb_str = f"{r['val_b']:.2f}"
@@ -2103,6 +2632,24 @@ class MouseComparatorApp:
         is_coh = self.current_mode.get() == "cohort"
         if ReportExporter.export_csv(out_path, self._current_rows, is_cohort=is_coh):
             messagebox.showinfo(APP_NAME, self.tr("msg_exported", path=out_path))
+
+    def action_export_origin(self):
+        if not self.records_a or not self.records_b:
+            messagebox.showinfo(APP_NAME, self.tr("msg_no_data"))
+            return
+        out_dir = filedialog.askdirectory(title="Select Output Folder for OriginPro Package")
+        if not out_dir:
+            return
+        written = ReportExporter.export_origin_package(
+            out_dir,
+            self.records_a,
+            self.records_b,
+            agg_mode=self.cohort_agg_var.get(),
+            paired=bool(self.cohort_paired_var.get()),
+            lang=self.lang,
+        )
+        if written:
+            messagebox.showinfo(APP_NAME, self.tr("msg_origin_exported", n=len(written), path=out_dir))
 
     def action_export_html(self):
         rec_a, rec_b = self._get_selected_pair()

@@ -1,0 +1,134 @@
+================================================================================
+MOUSEANALYZER COMPARATOR PRO — TUDOMÁNYOS ÖSSZEHASONLÍTÁSI ÉS ORIGINPRO ÚTMUTATÓ
+================================================================================
+Cél: Egészséges (A) vs. Beteg / Gyógyult (B) állatok longitudinális, párosított
+összehasonlítása (3 futás/állat, a 3. futásra jelentkező motivációvesztés
+kezelésével).
+
+--------------------------------------------------------------------------------
+1. TUDOMÁNYOS ÖSSZEHASONLÍTÁSI TIPPEK (3 FUTÁS + MOTIVÁCIÓVESZTÉS)
+--------------------------------------------------------------------------------
+
+1.1. Miért NE használj sima számtani átlagot a 3 futásra?
+- Ha egy állat a 3. futásban elveszíti a motivációját, megáll vagy leül 20-40 mp-re,
+  az a `Teljes_Athaladasi_Ido_mp` átlagát drasztikusan elhúzza, miközben a valódi
+  motoros koordinációja nem feltétlenül romlott.
+- Emiatt a 3 futást először egyedenként (Egyed_ID) kell robusztusan összegezni,
+  hogy minden állat pontosan 1 független adatpontként szerepeljen a statisztikában
+  (elkerülve a pszeudoreplikációt!).
+
+1.2. Melyik futás-összegzést válaszd a MouseComparatorban?
+A Comparatorban 4 tudományosan elfogadott mód közül választhatsz:
+  1) Medián (Ajánlott / Alapértelmezett):
+     - A 3 futás középső értéke. Egyetlen elrontott/motiválatlan (pl. 3.) futás
+       nem torzítja el az állat eredményét.
+  2) Legjobb futás (Best-of-3):
+     - Az állat legjobb teljesítménye (legrövidebb idő / legkevesebb lábhiba /
+       legnagyobb sebesség). A maximális motoros kapacitást méri.
+  3) Első 2 futás mediánja (First 2 Runs):
+     - Kizárja a 3. futást, ha az egyértelműen motivációvesztett.
+  4) Átlag (Mean):
+     - Csak akkor ajánlott, ha nincs extrém megállásos kiugró a futások között.
+
+FONTOS SZABÁLY: Bármelyik összegzést választod, ugyanazt a szabályt alkalmazd az
+egészséges, a beteg és a gyógyult mérésekre is!
+
+1.3. Motoros képesség vs. Motiváció szétválasztása (a saját CSV-d előnye)
+A MouseAnalyzer külön méri az aktív mozgást és a tétovázást, így két külön
+kérdést tudsz tisztán vizsgálni:
+  - Tiszta motoros koordináció:
+      * Netto_Mozgasi_Ido_mp  (kiszűri a megállások idejét!)
+      * Mancs_Labhiba_Db, Mellso_Labhiba_Db, Hatso_Labhiba_Db, Mely_Leleses_Db
+      * Testtartas_Imbolygas_px, Mozgas_Darabossag_Jerk
+      * Atlagsebesseg_cm_mp
+  - Motiváció / fáradékonyság / szorongás:
+      * Megallasok_OsszIdeje_mp, Megallasok_Szama
+      * Orr_Lenezes_Db (exploráció / tétovázás)
+      * Teljes_Athaladasi_Ido_mp
+      * Run 1 vs. Run 2 vs. Run 3 eltérés (ld. Origin_TrialEffect_MotivationCheck.csv)
+
+1.4. Párosított statisztika (ugyanazok az állatok!)
+Mivel ugyanazokat az egyedeket méred egészségesen és betegen/gyógyultan is,
+PÁROSÍTOTT (paired / repeated-measures) próbákat kell használni:
+  1) Ellenőrizd a különbségek (Delta = B - A) normalitását Shapiro-Wilk próbával.
+  2) Ha normális eloszlású (Shapiro p >= 0.05):
+       -> Párosított t-próba (Paired t-test) + hatásméret: Cohen's dz
+  3) Ha nem normális (Shapiro p < 0.05) vagy darabszám/ferde adat (pl. Labhiba_Db):
+       -> Wilcoxon előjeles rangpróba (Wilcoxon Signed-Rank Test) + Medián [IQR]
+
+A MouseComparator "OriginPro Export" gombja automatikusan kiszámolja ezeket,
+és megjelöli az ajánlott tesztet!
+
+--------------------------------------------------------------------------------
+2. ORIGIN / ORIGINPRO LÉPÉSRŐL LÉPÉSRE ÚTMUTATÓ
+--------------------------------------------------------------------------------
+
+2.1. Exportálás a MouseComparatorból
+1) Töltsd be az A mappát (Egészséges) és a B mappát (Beteg / Gyógyult).
+2) Válts "Kohorsz / Csoport (A vs B)" módra.
+3) Pipáld be: "Párosított (ugyanazok az egyedek)", és állítsd be a
+   "Futás összegzés"-t "Medián (Ajánlott)" módra.
+4) Kattints a fejlécben az "OriginPro Export" gombra, és válassz egy célmappát.
+
+A program 4 OriginPro-kompatibilis (vesszővel tagolt, pontos tizedesjelű) fájlt készít:
+  1. Origin_Wide_Paired_median.csv        -> Párosított tesztekhez és Before-After ábrához
+  2. Origin_Long_AllRuns.csv              -> Csoportosított Box/Violin ábrához és 2-way RM ANOVA-hoz
+  3. Origin_Summary_Stats.csv             -> Kész statisztikai összefoglaló táblázat
+  4. Origin_TrialEffect_MotivationCheck.csv -> Futás 1 vs 2 vs 3 (motivációvesztés) ellenőrzés
+
+2.2. CSV importálása OriginPro-ba
+1) OriginPro: Data -> Connect to File -> Text/CSV (vagy File -> Import -> Single ASCII).
+2) Delimiter: Comma (,), Decimal Separator: Period (.).
+3) Jelöld be az 1. sort mint Long Name / Header.
+
+2.3. Helyes diagramok készítése OriginPro-ban
+
+[A] Párosított "Before-After" / Paired Comparison ábra (LEGJOBB publikációhoz!)
+- Használd az `Origin_Wide_Paired_median.csv` fájlt.
+- Jelöld ki a két párosított oszlopot, pl.:
+    `A_Netto_Mozgasi_Ido_mp` és `B_Netto_Mozgasi_Ido_mp`
+    (vagy `A_Mancs_Labhiba_Db` és `B_Mancs_Labhiba_Db`)
+- Menü: Plot -> Categorical -> Paired Comparison Plot
+        (régebbi Origin verzióban: Plot -> Statistical -> Before-After)
+- Mit mutat? Minden állat egy-egy vonallal van összekötve (Egészséges -> Beteg/Gyógyult),
+  mellé pedig megjelenítheted a Medián + IQR (vagy Mean ± SD) dobozt/sávot.
+
+[B] Csoportosított Box / Violin ábra (futásonkénti bontás: Run 1, 2, 3)
+- Használd az `Origin_Long_AllRuns.csv` fájlt.
+- Jelöld ki a `Condition`, `Run` és a vizsgált metrika oszlopát (pl. `Megallasok_OsszIdeje_mp`).
+- Menü: Plot -> Categorical -> Grouped Box Chart (vagy Grouped Violin).
+- Group Columns: `Condition` (1. szint), `Run` (2. szint).
+- Ez vizuálisan tökéletesen megmutatja, hogyan nő meg a megállási idő a 3. futásra!
+
+2.4. Helyes statisztika futtatása OriginPro-ban
+
+1) Normalitás ellenőrzése (Shapiro-Wilk):
+   - Használd az `Origin_Wide_Paired_median.csv` fájlban a kész `Delta_<mutató>` oszlopot.
+   - Menü: Statistics -> Descriptive Statistics -> Normality Test
+   - Method: Shapiro-Wilk. (Ha p >= 0.05 -> normális; ha p < 0.05 -> nem-normális).
+
+2) Két állapot összehasonlítása (Egészséges vs. Beteg VAGY Egészséges vs. Gyógyult):
+   - Normális különbségek esetén:
+       Menü: Statistics -> Hypothesis Testing -> Paired-Sample t-Test
+       Sample 1: `A_<mutató>`, Sample 2: `B_<mutató>`
+   - Nem-normális vagy darabszám adat esetén (pl. lábhibák, megállások):
+       Menü: Statistics -> Nonparametric Tests -> Paired-Sample Wilcoxon Signed-Rank Test
+       Sample 1: `A_<mutató>`, Sample 2: `B_<mutató>`
+
+3) Három állapot összehasonlítása (Egészséges vs. Beteg vs. Gyógyult egyben!):
+   - Rakd egymás mellé egy Origin munkalapra a 3 oszlopot ugyanarra a sorrendre
+     rendezett `Egyed_ID`-val: `Egészséges_<mutató>`, `Beteg_<mutató>`, `Gyógyult_<mutató>`.
+   - Normális esetben:
+       Menü: Statistics -> ANOVA -> One-Way Repeated Measures ANOVA
+       (Post-hoc: Tukey vagy Bonferroni)
+   - Nem-normális esetben:
+       Menü: Statistics -> Nonparametric Tests -> Friedman ANOVA
+       (Post-hoc: Dunn's test)
+
+4) Futás-hatás (Run 1 vs Run 2 vs Run 3) és Interakció vizsgálata:
+   - Az `Origin_Wide_Paired_median.csv` tartalmazza a `A_Run1_...`, `A_Run2_...`, `A_Run3_...`
+     oszlopokat -> ezeken futtathatsz `Friedman ANOVA`-t a motivációvesztés bizonyítására.
+   - Vagy az `Origin_Long_AllRuns.csv`-n:
+       Menü: Statistics -> ANOVA -> Two-Way Repeated Measures ANOVA
+       Factor A: `Condition`, Factor B: `Run`, Subject: `Egyed_ID`.
+================================================================================

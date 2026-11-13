@@ -165,6 +165,55 @@ class TestMouseComparatorSuite(unittest.TestCase):
             )
             self.assertTrue(os.path.isfile(html_out))
 
+    def test_paired_cohort_aggregation_and_origin_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dir_a = os.path.join(tmp, "healthy")
+            dir_b = os.path.join(tmp, "sick")
+            # Create 5 matched subjects in A and B
+            recs_a = []
+            recs_b = []
+            for idx in range(1, 6):
+                sid = f"S{idx:02d}"
+                self._create_synthetic_export_dir(dir_a, subject_id=sid, num_runs=3, fault_base=1)
+                self._create_synthetic_export_dir(dir_b, subject_id=sid, num_runs=3, fault_base=5 + idx)
+            recs_a = mc.AnalyzerDatasetLoader.load_from_path(dir_a)
+            recs_b = mc.AnalyzerDatasetLoader.load_from_path(dir_b)
+
+            # Inject a Run-3 motivation-loss outlier in A for S01 (transit = 45.0s on Run 3)
+            for r in recs_a:
+                if r.subject_id == "S01" and r.run_num == 3:
+                    r.metrics["Teljes_Athaladasi_Ido_mp"] = 45.0
+
+            agg_med = mc.StatisticalComparator.aggregate_subject_runs(recs_a, agg_mode="median")
+            agg_mean = mc.StatisticalComparator.aggregate_subject_runs(recs_a, agg_mode="mean")
+            self.assertLess(agg_med["S01"]["Teljes_Athaladasi_Ido_mp"], 10.0)
+            self.assertGreater(agg_mean["S01"]["Teljes_Athaladasi_Ido_mp"], 18.0)
+
+            rows_paired = mc.StatisticalComparator.compare_cohorts(
+                recs_a, recs_b, lang="hu", paired=True, agg_mode="median", aggregate_by_subject=True
+            )
+            fault_row = next(r for r in rows_paired if r["key"] == "Mancs_Labhiba_Db")
+            self.assertEqual(fault_row["n_a"], 5)
+            self.assertEqual(fault_row["n_b"], 5)
+            self.assertTrue(fault_row["paired"])
+            self.assertIn(fault_row["rec_test"], ("Paired t-test", "Wilcoxon"))
+            self.assertLess(fault_row["p_rec"], 0.05)
+
+            trial_res = mc.StatisticalComparator.analyze_trial_effect(recs_a)
+            self.assertGreater(len(trial_res), 0)
+            self.assertEqual(trial_res[0]["n_subjects"], 5)
+
+            origin_dir = os.path.join(tmp, "origin_pkg")
+            written = mc.ReportExporter.export_origin_package(
+                origin_dir, recs_a, recs_b, agg_mode="median", paired=True, lang="hu"
+            )
+            self.assertEqual(len(written), 4)
+            for p in written:
+                self.assertTrue(os.path.isfile(p))
+            with open(os.path.join(origin_dir, "Origin_Wide_Paired_median.csv"), "r", encoding="utf-8-sig") as f:
+                lines = f.read().strip().splitlines()
+                self.assertEqual(len(lines), 6)  # 1 header + 5 matched subjects
+
 
 if __name__ == "__main__":
     unittest.main()
